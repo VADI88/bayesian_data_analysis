@@ -1,0 +1,250 @@
+---
+title: "Bayesian Beta-Binomial"
+format: html
+editor: visual
+---
+
+# Beta-Binomial Example
+
+Let's assume we're running a marketing campaign, and we want to learn about the response rate to our emails.
+
+The response to each email can be modeled as a Bernoulli random variable, where a success (Y = 1) corresponds to a response and a failure (Y = 0) corresponds to no response.
+
+Because the distinction between Bernoulli and Binomial is irrelevant in this context, we will model a Binomial random variable X with parameters n and $\theta$
+
+The parameter $\theta$ of this distribution is the response rate, which is unknown and is the quantity we want to infer.
+
+We'll use a beta prior on $\theta$, reflecting our prior belief about the response rate before seeing the data.
+
+## Base R
+
+-   Let's define our prior distribution, and visualize it. Let's suppose we think that the response rate will be sort of close to 50%. Then we might choose alpha and beta to be equal in our prior
+
+```{r}
+# Prior hyperparameters
+alpha_prior <- 5
+beta_prior <- 5
+```
+
+```{r}
+## Visualize the prior distribution
+hist(rbeta(10000, alpha_prior, beta_prior), xlim = c(0,1))
+```
+
+-   Here is a 95% **prior** credible interval for the parameter $\theta$.
+-   qbeta is the inverse cumulative distribution function which gives us the percentiles of the distribution.
+
+```{r}
+# 95% prior credible interval for theta
+qbeta(c(0.025, 0.975), alpha_prior, beta_prior)
+```
+
+-   We have sent emails to 50 people and 20 of them have responded. Thus, n = 50 and X = 20.
+
+```{r}
+# Data
+N <- 50 # number of trials
+x <- 20 # number of successes
+```
+
+-   Let's use our data to update the parameters of the posterior distribution, and visualize the distribution in a histogram.
+
+```{r}
+# We add the 20 successes to alpha
+alpha_posterior <- alpha_prior + x
+# We add the 30 failures to beta
+beta_posterior <- beta_prior + (N - x)
+
+alpha_posterior
+beta_posterior
+
+hist(rbeta(100000, alpha_posterior, beta_posterior), xlim = c(0,1))
+```
+
+-   Here is a 95% **posterior** credible interval for $\theta$.
+
+```{r}
+# 95% posterior credible interval for theta
+qbeta(c(0.025, 0.975), alpha_posterior, beta_posterior)
+```
+
+-   If we were to observe **50 new customers,** what is the **predictive distribution** of how many positive responses we will see?
+-   The predictive distribution accounts both for the inherent variablility of the random sample of customers **and** the uncertainty related to the parameter $\theta$.
+
+```{r}
+# Predictive distribution of a NEW 50 observations
+
+# Manually
+# Pick 10,000 values of theta from posterior
+theta <- rbeta(10000, alpha_posterior, beta_posterior)
+# Pick 10,000 values from Binomial(n = 50, p = theta)
+future_obs <- rbinom(10000, size = 50, prob = theta)
+
+hist(future_obs, , xlim = c(0,50))
+```
+
+-   Recall that the above predictive distribution is called a Beta-Binomial distribution.
+    -   Above, we simulated it as a hierarchical process (or compound distribution), where we first simulated the probability of success from a beta distribution, and then used that probability of success to simulate from a binomial distribution.
+-   R does not natively have the Beta-Binomial distribution, but we can use one from the package VGAM.
+
+```{r}
+#install.packages('VGAM')
+library(VGAM)
+hist(rbetabinom.ab(100000, size = 50, shape1 = alpha_posterior, shape2 = beta_posterior), xlim = c(0,50))
+```
+
+-   Notice this is **not the same** as just picking from a binomial distribution - the compound beta-binomial distribution above has more variance.
+
+    -   Look how many more observations are below 10 or above 30.
+
+```{r}
+# INCORRECT
+hist(rbinom(100000, 50, alpha_posterior/(alpha_posterior+beta_posterior)), , xlim = c(0,50))
+```
+
+## Stan
+
+-   Stan is a probabilistic programming language designed for probabilistic computation and Bayesian inference.
+
+    -   It is not necessary to use Stan for these simpler models because we have closed-form solutions with conjugate priors, but Stan is very useful for more complicated Bayesian models
+
+    -   Instead of using conjugacy to have easy distributions (like the beta distribution), Stan uses simulation methods to **create a large sample from the posterior distribution, which will be really similar to the true posterior.**
+
+-   Seeing how Stan is structured reinforces to us how the various model components we've learned about are used - the prior, the likelihood, hyperparameters, predictive distributions, etc
+
+    -   We aren't going to spend a lot of time going over the syntax of Stan. If you would like to practice, I would recommend using this code as a starting point and editing the data/hyperparameters and seeing how they change the results.
+
+-   We are going to use the package cmdstanr because it runs better in RStudio. There is also another popular package rstan that is very similar - these are just interfaces to the Stan programming languages. It doesn't matter which you use.
+
+-   Define the hyperparameters and the data at the top, so we could quickly change these for a new problem with new context
+
+```{r}
+# Data
+N <- 50 # number of trials
+y <- 20 # number of successes
+
+# Prior hyperparameters
+alpha_prior <- 5
+beta_prior <- 5
+```
+
+```{r}
+# Load necessary libraries
+# remotes::install_github("stan-dev/cmdstanr")
+#install.packages('posterior)
+#cmdstanr::install_cmdstan()
+
+library(cmdstanr)
+library(posterior)
+
+# Define Stan model
+stan_code <- '
+data {
+  int<lower=0> N; // number of trials
+  int<lower=0> y; // number of successes
+  real<lower=0> alpha; // prior hyperparameter
+  real<lower=0> beta; // prior hyperparameter
+}
+parameters {
+  real<lower=0, upper=1> theta; // probability of success
+}
+model {
+  theta ~ beta(alpha, beta); // prior
+  y ~ binomial(N, theta); // likelihood
+}
+generated quantities {
+  int y_pred;
+  y_pred = binomial_rng(N, theta); // posterior predictive distribution
+}
+'
+```
+
+-   We have to read this code, which is just a text string, into Stan and compile the model so that we can use it.
+-   We define the data (including the hyperparamters, which are part of the data in Stan) and package it for use in Stan.
+-   Then, we fit the model to the data (find our posterior distribution)
+
+```{r}
+# Write model to a file
+
+writeLines(stan_code, con = "model.stan")
+# Compile model
+model <- cmdstan_model("model.stan")
+```
+
+```{r}
+# Package data for Stan
+stan_data <- list(N = N, y = y, alpha = alpha_prior, beta = beta_prior)
+
+# Fit model
+fit <- model$sample(data = stan_data, iter_sampling = 1000, chains = 4)
+```
+
+-   Here we extract the posterior distribution and use it to make a credible interval.
+
+```{r}
+# Extract posterior samples
+posterior_samples <- fit$draws()
+
+# Convert to data frame
+posterior_samples_df <- as_draws_df(posterior_samples)
+
+# Visualize the posterior distribution
+hist(posterior_samples_df$theta, xlim = c(0,1))
+```
+
+-   We find a credible interval by taking the quantiles of the samples from the posterior distribution - essentially, we are estimating the quantiles from a sample because we are not relying on knowing that the posterior is a Beta distribution. Stan estimates all of these quantities through simulation.
+
+```{r}
+# 95% credible interval
+ci <- quantile2(posterior_samples_df$theta, probs = c(0.025, 0.975))
+cat("95% credible interval for theta: (", ci[1], ",", ci[2], ")\n")
+```
+
+-   We can also use the posterior distribution samples to find the point estimates of the parameter (our best guesses)
+
+```{r}
+# Posterior mean
+expected_value <- mean(posterior_samples_df$theta)
+cat("Posterior mean for theta: ", expected_value, "\n")
+
+# Posterior median
+post_median <- median(posterior_samples_df$theta)
+cat("Posterior median for theta: ", post_median, "\n")
+```
+
+-   We can't really find the MAP by using mode() because with a continuous random variable theta, no value will occur more than once when we draw from the posterior distribution.
+
+-   We can approximate the posterior distribution with something called density estimation to approximate the MAP estimate.
+
+```{r}
+# MAP estimate 
+posterior_samples <- posterior_samples_df$theta
+
+# Estimate density
+d <- density(posterior_samples)
+
+# Get the index of the maximum density
+max_density_index <- which.max(d$y)
+
+# Compute the MAP
+map_estimate <- d$x[max_density_index]
+
+cat("MAP estimate for theta: ", map_estimate, "\n")
+
+# Plot density
+plot(d, main = "Density of Posterior Samples", xlab = "Theta")
+
+# Highlight the MAP estimate
+map_estimate <- d$x[which.max(d$y)]
+abline(v = map_estimate, col = "red", lwd = 2)
+```
+
+-   We can also sample from the predictive distribution as well.
+
+```{r}
+# Posterior predictive samples
+y_pred_samples <- posterior_samples_df$y_pred
+
+# Plot posterior predictive distribution
+hist(y_pred_samples, probability = TRUE, main = "Posterior predictive distribution", xlab = "y_pred", xlim = c(0,50))
+```

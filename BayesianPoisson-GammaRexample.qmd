@@ -1,0 +1,230 @@
+---
+title: "Bayesian Poisson-Gamma"
+format: html
+editor: visual
+---
+
+# Poisson - Gamma Example
+
+Let's say we're studying the number of customers visiting a coffee shop daily. We observe the number of customers for 10 days and want to infer the average number of daily visits.
+
+We can model the daily number of visits as a Poisson distribution, where the rate parameter λ represents the average number of daily visits. Since λ is unknown, we put a Gamma prior on it. The Gamma distribution is a suitable prior for λ because it is always positive and can represent a wide range of shapes depending on its parameters.
+
+## Base R
+
+-   We think around 10 customers visit the shop per day, but we are not sure of that at all
+
+    -   We want the expected value alpha/beta = 10
+
+    -   But we want the standard deviation sqrt(alpha) / beta to be high too (maybe around 10?)
+
+```{r}
+# Prior hyperparameters
+alpha_prior <- 1
+beta_prior <- .1
+
+## Visualize the prior distribution
+hist(rgamma(10000, alpha_prior, beta_prior), breaks = 100)
+```
+
+-   I think this prior distribution adequately describes my beliefs, because I'm pretty sure that there are fewer than 40 customers per day.
+
+```{r}
+# 95% prior credible interval for lambda
+qgamma(c(0.025, 0.975), alpha_prior, beta_prior)
+
+```
+
+-   We simulate data, but set a seed so it is reproducible.
+
+-   This is the 10 days of data we observe from the coffee shop, where we observe between 2 and 9 customers per day.
+
+```{r}
+# Simulate some Poisson data
+set.seed(123) # for reproducibility
+N <- 10
+true_lambda <- 5
+x <- rpois(N, true_lambda)
+x
+```
+
+-   We update the parameters and make a histogram of the posterior distribution.
+
+```{r}
+# Update parameters
+# Add the number of total events to alpha
+alpha_posterior <- alpha_prior + sum(x)
+# Add the sample size to beta
+beta_posterior <- beta_prior + N
+
+alpha_posterior
+beta_posterior
+
+hist(rgamma(100000, alpha_posterior, beta_posterior))
+
+```
+
+-   Here is a 95% credible interval using qgamma.
+
+```{r}
+# 95% posterior credible interval for lambda
+qgamma(c(0.025, 0.975), alpha_posterior, beta_posterior)
+```
+
+-   This is a predictive distribution for future observations, accounting for the inherent daily uncertainty and our uncertainty about the rate $\lambda$.
+
+```{r}
+# Predictive distribution
+
+# Manually
+# Pick 100,000 values of lambda from prior
+lambda_draws <- rgamma(100000, alpha_posterior, beta_posterior)
+# Pick 100,000 values from Poisson(lambda)
+future_obs <- rpois(100000, lambda = lambda_draws)
+
+hist(future_obs)
+```
+
+-   Here is the predictive distribution directly, which is a negative binomial distribution.
+
+```{r}
+param1 <- alpha_posterior
+param2 <- beta_posterior/(beta_posterior + 1)
+hist(rnbinom(100000, size = param1, prob = param2))
+```
+
+# Stan
+
+-   We need to load in the Stan packages and define the Poisson-Gamma model.
+
+```{r}
+# Load necessary libraries
+# Install if necessary, remove # in lines below.
+#install.packages('cmdstanr')
+#install.packages('posterior)
+library(cmdstanr)
+library(posterior)
+
+# Define Stan model
+stan_code <- '
+data {
+  int<lower=0> N; // number of observations
+  int<lower=0> y[N]; // observed counts
+  real<lower=0.1> alpha; // prior hyperparameter
+  real<lower=0.1> beta; // prior hyperparameter
+}
+parameters {
+  real<lower=0> lambda; // Poisson rate parameter
+}
+model {
+  lambda ~ gamma(alpha, beta); // prior
+  y ~ poisson(lambda); // likelihood
+}
+generated quantities {
+  int y_pred;
+  y_pred = poisson_rng(lambda); // posterior predictive distribution
+}
+'
+
+# Write model to a file
+writeLines(stan_code, con = "model.stan")
+
+# Compile model
+model <- cmdstan_model("model.stan")
+```
+
+-   We need to simulate the data from above (this is still in my R environment from the example above without Stan, but it doesn't hurt to show it again!)
+
+-   Also, we define the hyperparameters and package together all the data for Stan, and fit the model based on the data.
+
+```{r}
+# Simulate some Poisson data
+set.seed(123) # for reproducibility
+N <- 10
+true_lambda <- 5
+y <- rpois(N, true_lambda)
+
+# Prior hyperparameters
+alpha_prior <- 1
+beta_prior <- .1
+
+# Run Stan model
+stan_data <- list(
+  N = N,
+  y = y,
+  alpha = alpha_prior,
+  beta = beta_prior
+)
+fit <- model$sample(data = stan_data, iter_sampling = 1000, chains = 4)
+```
+
+-   We draw samples to determine our posterior distribution and use it to make a credible interval.
+
+```{r}
+# Extract posterior samples
+posterior_samples <- fit$draws()
+
+# Convert to data frame
+posterior_samples_df <- as_draws_df(posterior_samples)
+
+
+hist(posterior_samples_df$lambda)
+
+# 95% credible interval
+ci <- quantile2(posterior_samples_df$lambda, probs = c(0.025, 0.975))
+cat("95% credible interval for lambda: (", ci[1], ",", ci[2], ")\n")
+```
+
+-   We can find the point estimates.
+
+```{r}
+# MAP estimate (not possible with continuous parameters, we would have to create some analytical 
+# approximation and use that)
+
+#map_estimate <- mode(posterior_samples_df$lambda)
+#cat("MAP estimate for lambda: ", map_estimate, "\n")
+
+# Posterior mean
+expected_value <- mean(posterior_samples_df$lambda)
+cat("Expected value for lambda: ", expected_value, "\n")
+
+# Posterior median
+post_median <- median(posterior_samples_df$lambda)
+cat("Posterior median for lambda: ", post_median, "\n")
+
+```
+
+-   We could approximate the MAP using density estimation.
+
+```{r}
+# MAP estimate 
+posterior_samples <- posterior_samples_df$lambda
+
+# Estimate density
+d <- density(posterior_samples)
+
+# Get the index of the maximum density
+max_density_index <- which.max(d$y)
+
+# Compute the MAP
+map_estimate <- d$x[max_density_index]
+
+cat("MAP estimate for lambda: ", map_estimate, "\n")
+
+# Plot density
+plot(d, main = "Density of Posterior Samples", xlab = "Lambda")
+
+# Highlight the MAP estimate
+map_estimate <- d$x[which.max(d$y)]
+abline(v = map_estimate, col = "red", lwd = 2)
+```
+
+-   We can draw posterior samples (which follow a negative binomial distribution)
+
+```{r}
+# Posterior predictive samples
+y_pred_samples <- posterior_samples_df$y_pred
+
+# Plot posterior predictive distribution
+hist(y_pred_samples, probability = TRUE, main = "Posterior predictive distribution", xlab = "y_pred")
+```
