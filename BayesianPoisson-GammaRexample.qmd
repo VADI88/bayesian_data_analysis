@@ -109,7 +109,7 @@ library(posterior)
 stan_code <- '
 data {
   int<lower=0> N; // number of observations
-  int<lower=0> y[N]; // observed counts
+  array[N] int<lower=0> y; // observed counts
   real<lower=0.1> alpha; // prior hyperparameter
   real<lower=0.1> beta; // prior hyperparameter
 }
@@ -127,10 +127,10 @@ generated quantities {
 '
 
 # Write model to a file
-writeLines(stan_code, con = "model.stan")
+writeLines(stan_code, con = "gamma_model.stan")
 
 # Compile model
-model <- cmdstan_model("model.stan")
+model <- cmdstan_model("gamma_model.stan")
 ```
 
 -   We need to simulate the data from above (this is still in my R environment from the example above without Stan, but it doesn't hurt to show it again!)
