@@ -1,0 +1,222 @@
+---
+title: "Bayesian Normal-Normal"
+format: html
+editor: visual
+---
+
+# Normal-Normal Example
+
+Let's assume we're conducting quality control in a factory. We have a machine that produces candy, and the weight of these candies follows a normal distribution.
+
+We know the standard deviation of the weight is 2 grams, but the machine has a control to adjust the average weight.
+
+The setting on the machine has been lost, so we don't know the average weight it is set for.
+
+We weigh 10 pieces of candy, and we want to infer the average weight from these measurements.
+
+## Base R
+
+-   I think the weight of the average candy is **around** 100 grams (that's what the dial was set at before!), but I'm very uncertain.
+
+```{r}
+# Prior hyperparameters
+mu_prior <- 100
+sigma_prior <- 50
+
+## Visualize the prior distribution
+hist(rnorm(1000000, mu_prior, sigma_prior))
+
+
+# 95% prior credible interval for mu
+qnorm(c(0.025, 0.975), mu_prior, sigma_prior)
+```
+
+-   Here is the data of the weights of the 10 candies we observed. In real life, this data would be given to us - we are simulating it so that we don't have to read in files of data, and to demonstrate that the true mean which is unknown to us is 50.
+
+```{r}
+# Simulate some Normal data
+set.seed(123) # for reproducibility
+N <- 10
+true_mu <- 50 # true average weight of candy (in grams)
+sigma <- 2 # known standard deviation (in grams)
+x <- rnorm(N, true_mu, sigma) # observed weights
+x
+```
+
+-   We can update our parameters using the formulas presented to us, and then visualize the posterior distribution.
+
+```{r}
+# Update parameters
+mu_posterior <- (sigma^2*mu_prior + N*mean(x)*sigma_prior^2)/(sigma^2 + N*sigma_prior^2)
+
+sigma_posterior <- sqrt((sigma^2*sigma_prior^2)/(sigma^2+N*sigma_prior^2))
+
+mu_posterior
+sigma_posterior
+
+hist(rnorm(100000, mu_posterior, sigma_posterior))
+```
+
+-   Here is a 95% posterior credible interval using qnorm(), the inverse cumulative distribution function which can find percentiles.
+
+```{r}
+# 95% posterior credible interval for mu
+qnorm(c(0.025, 0.975), mu_posterior, sigma_posterior)
+```
+
+-   If we were to draw future observations, what would they look like?
+
+```{r}
+# Hierarchical perspective
+mu_draws <- rnorm(100000, mu_posterior, sigma_posterior)
+future_obs <- rnorm(100000, mean = mu_draws, sd = sigma)
+
+hist(future_obs)
+```
+
+```{r}
+# Direct simulation
+hist(rnorm(100000, mean = mu_posterior, sd = sqrt(sigma^2+sigma_posterior^2)))
+```
+
+-   We could even find the 2.5%tile and 97.5%tile of the predictive distribution and create something called a **prediction interval.** Where do we expect 95% of future observations to lie?
+
+```{r}
+qnorm(c(0.025, 0.975), mean = mu_posterior, sd = sqrt(sigma^2+sigma_posterior^2))
+```
+
+# Stan
+
+Here is the corresponding Stan code, where we define and compile the model.
+
+```{r}
+# Load necessary libraries
+# Install packages if necessary
+# install.packages('cmdstanr')
+# install.pacakges('posterior')
+library(cmdstanr)
+library(posterior)
+
+# Define Stan model
+stan_code <- '
+data {
+  int<lower=0> N; // number of observations
+  vector[N] y; // observed weights
+  real<lower=0> sigma; // known standard deviation
+  real mu_prior; // prior mean
+  real<lower=0> sigma_prior; // prior standard deviation
+}
+parameters {
+  real mu; // mean
+}
+model {
+  mu ~ normal(mu_prior, sigma_prior); // prior
+  y ~ normal(mu, sigma); // likelihood
+}
+generated quantities {
+  real y_pred;
+  y_pred = normal_rng(mu, sigma); // posterior predictive distribution
+}
+'
+
+# Write model to a file
+writeLines(stan_code, con = "normal_model.stan")
+
+# Compile model
+model <- cmdstan_model("normal_model.stan")
+```
+
+-   Here, we simulate the data, define the hyperparamters, and run the model.
+
+```{r}
+# Simulate some Normal data
+set.seed(123) # for reproducibility
+N <- 10
+true_mu <- 50 # true average weight of candy (in grams)
+sigma <- 2 # known standard deviation (in grams)
+y <- rnorm(N, true_mu, sigma) # observed weights
+
+# Prior hyperparameters
+mu_prior <- 100
+sigma_prior <- 50
+
+# Run Stan model
+stan_data <- list(
+  N = N,
+  y = y,
+  sigma = sigma,
+  mu_prior = mu_prior,
+  sigma_prior = sigma_prior
+)
+fit <- model$sample(data = stan_data, iter_sampling = 1000, chains = 4)
+```
+
+-   We extract the posterior samples and make a 95% credible interval for mu.
+
+```{r}
+# Extract posterior samples
+posterior_samples <- fit$draws()
+
+# Convert to data frame
+posterior_samples_df <- as_draws_df(posterior_samples)
+
+
+hist(posterior_samples_df$mu)
+
+# 95% credible interval
+ci <- quantile2(posterior_samples_df$mu, probs = c(0.025, 0.975))
+cat("95% credible interval for mu: (", ci[1], ",", ci[2], ")\n")
+```
+
+-   Here are our point estimators:
+
+```{r}
+
+# MAP estimate (not possible with continuous parameters, we would have to create some analytical 
+# approximation and use that)
+#map_estimate <- mode(posterior_samples_df$mu)
+#cat("MAP estimate for mu: ", map_estimate, "\n")
+
+# Posterior mean
+expected_value <- mean(posterior_samples_df$mu)
+cat("Expected value for mu: ", expected_value, "\n")
+
+# Posterior median
+post_median <- median(posterior_samples_df$mu)
+cat("Posterior median for lambda: ", post_median, "\n")
+```
+
+-   Here is the approximation to the MAP estimate using density estimation:
+
+```{r}
+# MAP estimate 
+posterior_samples <- posterior_samples_df$mu
+
+# Estimate density
+d <- density(posterior_samples)
+
+# Get the index of the maximum density
+max_density_index <- which.max(d$y)
+
+# Compute the MAP
+map_estimate <- d$x[max_density_index]
+
+cat("MAP estimate for mu: ", map_estimate, "\n")
+
+# Plot density
+plot(d, main = "Density of Posterior Samples", xlab = "mu")
+
+# Highlight the MAP estimate
+map_estimate <- d$x[which.max(d$y)]
+abline(v = map_estimate, col = "red", lwd = 2)
+```
+
+-   Here is the predictive distribution - accounting for our uncertainty about mu, and the inherent randomnness of each observation (due to the standard deviation sigma!), this is what we expect for a future observation.
+
+```{r}
+# Posterior predictive samples
+y_pred_samples <- posterior_samples_df$y_pred
+
+# Plot posterior predictive distribution
+hist(y_pred_samples, probability = TRUE, main = "Posterior predictive distribution", xlab = "y_pred")
+```
